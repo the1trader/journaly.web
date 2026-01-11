@@ -1,6 +1,9 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-background: #f8fafc;
+  --color-foreground: #0f172a;
+}
 
 :root {
   --background: #f8fafc;
