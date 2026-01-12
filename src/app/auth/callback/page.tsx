@@ -11,7 +11,16 @@ export default function AuthCallback() {
   useEffect(() => {
     const handleAuthCallback = async () => {
       try {
-        // Handle the auth callback for static export
+        const urlParams = new URLSearchParams(window.location.search)
+        const type = urlParams.get('type')
+
+        if (type === 'recovery') {
+          // Handle password recovery - redirect to reset password page
+          router.push('/reset-password' + window.location.search)
+          return
+        }
+
+        // Handle regular auth callback
         const { data, error } = await supabase.auth.getSession()
 
         if (error) {

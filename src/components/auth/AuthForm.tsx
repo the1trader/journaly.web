@@ -9,10 +9,12 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import Link from 'next/link'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function AuthForm({ mode }: { mode: 'login' | 'signup' | 'forgot-password' }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -27,21 +29,34 @@ export default function AuthForm({ mode }: { mode: 'login' | 'signup' | 'forgot-
 
     try {
       if (currentMode === 'login') {
-        const { error } = await authService.signIn(email, password)
-        if (error) throw error
+        const { data, error } = await authService.signIn(email, password)
+        if (error) {
+          console.error('Login error:', error)
+          throw new Error(error.message || 'Invalid credentials')
+        }
+        if (!data.user) {
+          throw new Error('Login failed - please try again')
+        }
         router.push('/')
         router.refresh()
       } else if (currentMode === 'signup') {
-        const { error } = await authService.signUp(email, password)
-        if (error) throw error
+        const { data, error } = await authService.signUp(email, password)
+        if (error) {
+          console.error('Signup error:', error)
+          throw new Error(error.message || 'Signup failed')
+        }
         setMessage('Check your email for the confirmation link!')
       } else if (currentMode === 'forgot-password') {
         const { error } = await authService.resetPassword(email)
-        if (error) throw error
+        if (error) {
+          console.error('Reset password error:', error)
+          throw new Error(error.message || 'Failed to send reset email')
+        }
         setMessage('Password reset link sent to your email!')
       }
     } catch (err: any) {
-      setError(err.message)
+      console.error('Auth error:', err)
+      setError(err.message || 'An unexpected error occurred')
       setLoading(false)
     } finally {
       if (currentMode !== 'login') setLoading(false)
@@ -94,15 +109,24 @@ export default function AuthForm({ mode }: { mode: 'login' | 'signup' | 'forgot-
             {currentMode !== 'forgot-password' && (
               <div className="space-y-2">
                 <Label htmlFor="password" title="password" className="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Password</Label>
-                <Input 
-                  id="password" 
-                  type="password" 
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="h-14 bg-[#161f2a] border-slate-800 text-white rounded-xl font-medium px-6 focus-visible:ring-2 focus-visible:ring-teal-500 transition-all placeholder:text-slate-600"
-                  required 
-                />
+                <div className="relative">
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="h-14 bg-[#161f2a] border-slate-800 text-white rounded-xl font-medium px-6 pr-12 focus-visible:ring-2 focus-visible:ring-teal-500 transition-all placeholder:text-slate-600"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-300 transition-colors"
+                  >
+                    {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
               </div>
             )}
 

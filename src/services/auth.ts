@@ -40,7 +40,7 @@ export const authService = {
   async resetPassword(email: string) {
     if (!supabase) throw new Error("Auth service not initialized");
     return await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback?type=recovery`,
+      redirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/reset-password`,
     });
   }
 };
