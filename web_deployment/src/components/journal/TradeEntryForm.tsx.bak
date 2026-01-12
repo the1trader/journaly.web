@@ -1,0 +1,632 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/utils/supabase/client'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Checkbox } from '@/components/ui/checkbox'
+import { calculatePMS, calculatePPI, getPsychologyStatus, PsychologyState, TradePsychologyData } from '@/lib/psychology'
+import { calculateICTAlignmentScore } from '@/lib/ict-logic'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { AlertTriangle, LayoutGrid, Brain, PenTool, ClipboardCheck, CheckCircle2, XCircle } from 'lucide-react'
+import { NotionBlockEditor, Block } from '@/components/ui/notion-editor'
+import { Separator } from '@/components/ui/separator'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+
+interface CustomField {
+  id: string
+  name: string
+  type: string
+  options: string[]
+}
+
+const PSYCHOLOGY_STATES: PsychologyState[] = ['FOMO', 'Fear', 'Neutral', 'Calm', 'Calm & Confident']
+
+export function TradeEntryForm({ onComplete }: { onComplete?: () => void }) {
+  const [loading, setLoading] = useState(false)
+  const [customFields, setCustomFields] = useState<CustomField[]>([])
+  const [account, setAccount] = useState<any>(null)
+  const [recentTrades, setRecentTrades] = useState<TradePsychologyData[]>([])
+  const [isWarningOpen, setIsWarningOpen] = useState(false)
+
+  // Template State
+  const [template, setTemplate] = useState('MANUAL') // MANUAL | ICT
+
+  // Form State
+  const [pair, setPair] = useState('')
+  const [entryDate, setEntryDate] = useState(new Date().toISOString().split('T')[0])
+  const [entryTime, setEntryTime] = useState('')
+  const [session, setSession] = useState('New York')
+  const [direction, setDirection] = useState('Long')
+  const [resultRR, setResultRR] = useState('')
+  const [riskPercent, setRiskPercent] = useState('')
+
+  // Psychology State
+  const [psychologyState, setPsychologyState] = useState<PsychologyState>('Neutral')
+  const [confidenceScore, setConfidenceScore] = useState<number>(3)
+
+  // ICT Specific State
+  const [ictValues, setIctValues] = useState({
+    weeklyBias: 'LONG',
+    dailyBias: 'LONG',
+    tradeSession: 'NY',
+    tradePOI: '1h',
+    htfPOI: 'D-FVG',
+    liqType: 'Internal H/L',
+    smtConfirmation: 'No'
+  })
+
+  // Custom values state
+  const [customValues, setCustomValues] = useState<Record<string, any>>({})
+
+  // Content (Rich Blocks)
+  const [contentBefore, setContentBefore] = useState<Block[]>([])
+  const [contentAfter, setContentAfter] = useState<Block[]>([])
+
+  // Reflections
+  const [isFollowingPlan, setIsFollowingPlan] = useState<boolean | null>(null)
+  const [willRepeatTrade, setWillRepeatTrade] = useState<string>('')
+
+  const supabase = createClient()
+  const router = useRouter()
+
+  useEffect(() => {
+    const fetchData = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      const { data: acc } = await supabase.from('accounts').select('*').eq('user_id', user.id).single()
+      setAccount(acc)
+      if (acc?.default_risk_percent) setRiskPercent(acc.default_risk_percent.toString())
+
+      const { data: fields } = await supabase.from('custom_field_definitions').select('*').order('sort_order')
+      if (fields) setCustomFields(fields)
+
+      const { data: trades } = await supabase
+        .from('trades')
+        .select('psychology_state, confidence_score, result_rr')
+        .eq('user_id', user.id)
+        .order('entry_date', { ascending: false })
+        .limit(10)
+
+      if (trades) {
+        setRecentTrades(trades as TradePsychologyData[])
+      }
+    }
+    fetchData()
+  }, [])
+
+  const handleIctChange = (key: string, value: string) => {
+    setIctValues(prev => ({ ...prev, [key]: value }))
+  }
+
+  const checkSafety = () => {
+    const pms = calculatePMS(recentTrades)
+    const ppi = calculatePPI(recentTrades, 0)
+    const status = getPsychologyStatus(pms, ppi)
+
+    if (status === 'Stand Down') {
+      setIsWarningOpen(true)
+      return false
+    }
+    return true
+  }
+
+  const onPreSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (checkSafety()) {
+      executeSubmit()
+    }
+  }
+
+  const executeSubmit = async () => {
+    setLoading(true)
+    setIsWarningOpen(false)
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user || !account) return
+
+    const rr = parseFloat(resultRR)
+    const riskPct = parseFloat(riskPercent)
+
+    let strategyData: any = {}
+    if (template === 'ICT') {
+      const { score, tier } = calculateICTAlignmentScore(ictValues, direction)
+      strategyData = {
+        ...ictValues,
+        alignment_score: score,
+        alignment_tier: tier
+      }
+    }
+
+    const tradeData = {
+      user_id: user.id,
+      account_id: account.id,
+      pair,
+      entry_date: entryDate,
+      entry_time: entryTime,
+      session,
+      direction,
+      result_rr: rr,
+      risk_percent: riskPct,
+      psychology_state: psychologyState,
+      confidence_score: confidenceScore,
+      template_type: template,
+      strategy_data: strategyData,
+      is_following_plan: isFollowingPlan,
+      will_repeat_trade: willRepeatTrade,
+      content_before: contentBefore,
+      content_after: contentAfter,
+      screenshot_before_url: contentBefore.find(b => b.type === 'image')?.content,
+      screenshot_after_url: contentAfter.find(b => b.type === 'image')?.content,
+    }
+
+    try {
+      const response = await fetch('/api/trades', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(tradeData),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        alert(error.error || 'Failed to create trade')
+        setLoading(false)
+        return
+      }
+
+      const result = await response.json()
+
+      // Handle custom field values
+      const customValueEntries = Object.entries(customValues).map(([fieldId, value]) => ({
+        trade_id: result.tradeId,
+        field_definition_id: fieldId,
+        value: value
+      }))
+
+      if (customValueEntries.length > 0) {
+        await fetch('/api/trade-custom-values', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(customValueEntries),
+        })
+      }
+
+      setLoading(false)
+      if (onComplete) onComplete()
+      else {
+        router.push('/dashboard')
+        router.refresh()
+      }
+    } catch (error) {
+      console.error('Error creating trade:', error)
+      alert('Failed to create trade')
+      setLoading(false)
+    }
+  }
+
+  const handleCustomValueChange = (id: string, value: any) => {
+    setCustomValues(prev => ({ ...prev, [id]: value }))
+  }
+
+  const SectionHeader = ({ icon: Icon, title, color = "text-slate-900" }: { icon: any, title: string, color?: string }) => (
+    <div className={`flex items-center gap-3 ${color} border-b border-slate-200 pb-4 mb-8`}>
+      <div className="bg-slate-100 p-2 rounded-lg">
+        <Icon className="h-5 w-5" />
+      </div>
+      <h2 className="text-lg font-black uppercase tracking-widest">{title}</h2>
+    </div>
+  )
+
+  return (
+    <>
+      <form onSubmit={onPreSubmit} className="space-y-20">
+        
+        {/* Section: Trade Identity */}
+        <section className="space-y-8">
+          <SectionHeader icon={LayoutGrid} title="Trade Identity" />
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+            <div className="space-y-3">
+              <Label className="text-slate-500 font-bold">Instrument / Pair</Label>
+              <Input 
+                value={pair} 
+                onChange={e => setPair(e.target.value)} 
+                placeholder="e.g. BTCUSD" 
+                className="text-2xl h-auto py-3 font-black border-none bg-slate-100 focus-visible:bg-white focus-visible:ring-1 focus-visible:ring-slate-200 transition-all rounded-xl"
+                required
+              />
+            </div>
+            <div className="space-y-3">
+              <Label className="text-slate-500 font-bold">Direction</Label>
+              <Select value={direction} onValueChange={setDirection}>
+                <SelectTrigger className={`text-2xl h-auto py-3 font-black border-none bg-slate-100 focus:bg-white transition-all rounded-xl ${direction === 'Long' ? 'text-green-600' : 'text-red-600'}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Long">Long</SelectItem>
+                  <SelectItem value="Short">Short</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-3">
+              <Label className="text-slate-500 font-bold">Trade Result (RR)</Label>
+              <Input 
+                type="number" 
+                step="0.1" 
+                value={resultRR} 
+                onChange={e => setResultRR(e.target.value)} 
+                placeholder="e.g. 2.5" 
+                className="text-2xl h-auto py-3 font-black border-none bg-slate-100 focus-visible:bg-white focus-visible:ring-1 focus-visible:ring-slate-200 transition-all rounded-xl"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
+            <div className="space-y-2">
+              <Label className="text-xs text-slate-400 uppercase font-bold tracking-tight">Template</Label>
+              <Select value={template} onValueChange={setTemplate}>
+                <SelectTrigger className="border-none bg-slate-50 h-10 font-bold rounded-lg"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="MANUAL">Manual / Standard</SelectItem>
+                  <SelectItem value="ICT">ICT Strategy</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-slate-400 uppercase font-bold tracking-tight">Session</Label>
+              <Select value={session} onValueChange={setSession}>
+                <SelectTrigger className="border-none bg-slate-50 h-10 font-bold rounded-lg"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Asia">Asia</SelectItem>
+                  <SelectItem value="London">London</SelectItem>
+                  <SelectItem value="New York">New York</SelectItem>
+                  <SelectItem value="Custom">Custom</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-slate-400 uppercase font-bold tracking-tight">Entry Date</Label>
+              <Input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} className="border-none bg-slate-50 h-10 font-bold rounded-lg" required />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-slate-400 uppercase font-bold tracking-tight">Entry Time</Label>
+              <Input type="time" value={entryTime} onChange={e => setEntryTime(e.target.value)} className="border-none bg-slate-50 h-10 font-bold rounded-lg" required />
+            </div>
+          </div>
+        </section>
+
+        {/* Section: Psychology & Risk */}
+        <section className="space-y-8">
+          <SectionHeader icon={Brain} title="Psychology & Risk" />
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+            <div className="space-y-6">
+              <div className="space-y-4">
+                <Label className="text-slate-700 font-bold text-base">Psychological State</Label>
+                <div className="flex flex-wrap gap-2">
+                  {PSYCHOLOGY_STATES.map(s => (
+                    <Button
+                      key={s}
+                      type="button"
+                      variant={psychologyState === s ? 'default' : 'outline'}
+                      size="sm"
+                      onClick={() => setPsychologyState(s)}
+                      className={`rounded-full px-5 py-2 h-auto text-sm font-bold transition-all ${
+                        psychologyState === s 
+                          ? s === 'FOMO' || s === 'Fear' ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600'
+                          : 'hover:bg-slate-100 border-slate-200'
+                      }`}
+                    >
+                      {s}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <Label className="text-slate-700 font-bold text-base">Confidence Score</Label>
+                <div className="flex gap-4 items-center">
+                   <div className="flex-1 flex gap-2">
+                      {[1, 2, 3, 4, 5].map(score => (
+                        <Button
+                          key={score}
+                          type="button"
+                          variant={confidenceScore >= score ? 'default' : 'outline'}
+                          className={`flex-1 h-3 p-0 rounded-full transition-all ${confidenceScore >= score ? 'bg-blue-500 hover:bg-blue-600' : 'bg-slate-100 hover:bg-slate-200 border-none'}`}
+                          onClick={() => setConfidenceScore(score)}
+                        />
+                      ))}
+                   </div>
+                   <span className="text-3xl font-black text-blue-600 w-12 text-center">{confidenceScore}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <Label className="text-slate-700 font-bold text-base">Risk Allocation (%)</Label>
+              <div className="relative">
+                <Input 
+                  type="number" 
+                  step="0.01" 
+                  value={riskPercent} 
+                  onChange={e => setRiskPercent(e.target.value)} 
+                  className="text-5xl h-auto py-4 font-black border-none bg-slate-100 focus-visible:bg-white focus-visible:ring-1 focus-visible:ring-slate-200 pr-16 transition-all rounded-2xl"
+                  required
+                />
+                <span className="absolute right-6 top-1/2 -translate-y-1/2 text-3xl font-bold text-slate-400">%</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Section: Strategy & Plan */}
+        <section className="space-y-8">
+          <SectionHeader icon={ClipboardCheck} title="Strategy & Execution" />
+
+          {template === 'ICT' && (
+            <div className="bg-slate-100/50 p-8 rounded-3xl space-y-10 border border-slate-200">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">Weekly Bias</Label>
+                  <Select value={ictValues.weeklyBias} onValueChange={v => handleIctChange('weeklyBias', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="LONG">LONG</SelectItem>
+                      <SelectItem value="SHORT">SHORT</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">Daily Bias</Label>
+                  <Select value={ictValues.dailyBias} onValueChange={v => handleIctChange('dailyBias', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="LONG">LONG</SelectItem>
+                      <SelectItem value="SHORT">SHORT</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">SMT Confirmation</Label>
+                  <Select value={ictValues.smtConfirmation} onValueChange={v => handleIctChange('smtConfirmation', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Yes">Yes</SelectItem>
+                      <SelectItem value="No">No</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">POI Level (LTF)</Label>
+                  <Select value={ictValues.tradePOI} onValueChange={v => handleIctChange('tradePOI', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="4h">4H</SelectItem>
+                      <SelectItem value="1h">1H</SelectItem>
+                      <SelectItem value="15m">15m</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">HTF POI</Label>
+                  <Select value={ictValues.htfPOI} onValueChange={v => handleIctChange('htfPOI', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="D-FVG">D-FVG</SelectItem>
+                      <SelectItem value="W-FVG">W-FVG</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-3">
+                  <Label className="text-xs text-slate-500 uppercase font-black">Liquidity Type</Label>
+                  <Select value={ictValues.liqType} onValueChange={v => handleIctChange('liqType', v)}>
+                    <SelectTrigger className="bg-white border-slate-200 font-bold rounded-xl"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Swing H/L">Swing H/L</SelectItem>
+                      <SelectItem value="Internal H/L">Internal H/L</SelectItem>
+                      <SelectItem value="Continuation FVG">Continuation FVG</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Custom Fields - Flowing Vertically */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-10">
+            {customFields.map(field => (
+              <div key={field.id} className="space-y-3">
+                <Label className="text-slate-700 font-bold">{field.name}</Label>
+                {field.type === 'text' && (
+                  <Input 
+                    onChange={e => handleCustomValueChange(field.id, e.target.value)} 
+                    className="border-none bg-slate-100 text-lg py-3 h-auto rounded-xl"
+                    placeholder={`Enter ${field.name.toLowerCase()}...`}
+                  />
+                )}
+                {field.type === 'numeric' && (
+                  <Input 
+                    type="number" 
+                    onChange={e => handleCustomValueChange(field.id, parseFloat(e.target.value))} 
+                    className="border-none bg-slate-100 text-lg py-3 h-auto w-full rounded-xl"
+                  />
+                )}
+                {field.type === 'checkbox' && (
+                  <div className="flex items-center space-x-3 bg-slate-100 p-4 rounded-xl w-fit">
+                    <Checkbox id={field.id} className="h-6 w-6" onCheckedChange={val => handleCustomValueChange(field.id, val)} />
+                    <Label htmlFor={field.id} className="text-lg cursor-pointer font-medium">Yes / Confirmed</Label>
+                  </div>
+                )}
+                {field.type === 'dropdown' && (
+                  <Select onValueChange={val => handleCustomValueChange(field.id, val)}>
+                    <SelectTrigger className="border-none bg-slate-100 text-lg py-3 h-auto w-full rounded-xl"><SelectValue placeholder="Select option" /></SelectTrigger>
+                    <SelectContent>
+                      {field.options?.map(opt => (
+                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {field.type === 'rating' && (
+                  <div className="flex gap-3">
+                    {[1, 2, 3, 4, 5].map(star => (
+                      <Button
+                        key={star}
+                        type="button"
+                        variant={customValues[field.id] === star ? 'default' : 'outline'}
+                        size="lg"
+                        className={`flex-1 rounded-xl py-6 font-bold transition-all ${customValues[field.id] === star ? 'bg-blue-600 scale-105' : 'hover:bg-slate-200 border-slate-200'}`}
+                        onClick={() => handleCustomValueChange(field.id, star)}
+                      >
+                        {star}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* Section: Documentation (Notion Style) */}
+        <section className="space-y-12">
+          <SectionHeader icon={PenTool} title="Documentation" />
+
+          {/* Following Plan Toggle - Right under Documentation header */}
+          <div className="flex items-center justify-between bg-slate-100 p-6 rounded-3xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className={`h-6 w-6 ${isFollowingPlan === true ? 'text-green-600' : isFollowingPlan === false ? 'text-red-600' : 'text-slate-400'}`} />
+              <Label className="text-xl font-black text-slate-800 tracking-tight">Am I following the trade plan?</Label>
+            </div>
+            <ToggleGroup 
+              type="single" 
+              value={isFollowingPlan === null ? undefined : isFollowingPlan.toString()}
+              onValueChange={(v) => setIsFollowingPlan(v === 'true' ? true : v === 'false' ? false : null)}
+              className="bg-white p-1 rounded-xl shadow-inner border border-slate-200"
+            >
+              <ToggleGroupItem 
+                value="true" 
+                className="rounded-lg px-8 py-3 h-auto font-black text-base data-[state=on]:bg-green-600 data-[state=on]:text-white transition-all"
+              >
+                YES
+              </ToggleGroupItem>
+              <ToggleGroupItem 
+                value="false" 
+                className="rounded-lg px-8 py-3 h-auto font-black text-base data-[state=on]:bg-red-600 data-[state=on]:text-white transition-all"
+              >
+                NO
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+
+          <div className="space-y-16">
+            <div className="space-y-6">
+              <h3 className="text-2xl font-black tracking-tight flex items-center gap-2">
+                <span className="text-blue-600">01.</span> Preparation & Analysis
+              </h3>
+              <NotionBlockEditor
+                onChange={setContentBefore}
+                placeholder="What did you see before the entry? Paste your charts here..."
+              />
+            </div>
+
+            <Separator className="opacity-50" />
+
+            <div className="space-y-12">
+              <div className="space-y-8">
+                <h3 className="text-2xl font-black tracking-tight flex items-center gap-2">
+                  <span className="text-blue-600">02.</span> Review & Reflection
+                </h3>
+                
+                {/* Will Repeat Toggle - High Visibility */}
+                <div className="bg-blue-50/80 p-8 rounded-3xl border border-blue-200 space-y-6">
+                  <div className="space-y-2">
+                    <Label className="text-blue-600 font-black uppercase text-xs tracking-widest">Execution Integrity</Label>
+                    <p className="text-xl font-bold text-slate-900 leading-tight">Will you repeat this exact execution in the future?</p>
+                  </div>
+                  <ToggleGroup 
+                    type="single" 
+                    value={willRepeatTrade}
+                    onValueChange={(v) => setWillRepeatTrade(v)}
+                    className="justify-start gap-4"
+                  >
+                    <ToggleGroupItem 
+                      value="Yes" 
+                      className="flex-1 max-w-[200px] h-14 rounded-2xl border-2 border-blue-200 font-black text-lg data-[state=on]:bg-blue-600 data-[state=on]:border-blue-600 data-[state=on]:text-white transition-all"
+                    >
+                      YES
+                    </ToggleGroupItem>
+                    <ToggleGroupItem 
+                      value="No" 
+                      className="flex-1 max-w-[200px] h-14 rounded-2xl border-2 border-blue-200 font-black text-lg data-[state=on]:bg-red-600 data-[state=on]:border-red-600 data-[state=on]:text-white transition-all"
+                    >
+                      NO
+                    </ToggleGroupItem>
+                  </ToggleGroup>
+                </div>
+              </div>
+
+              <NotionBlockEditor
+                onChange={setContentAfter}
+                placeholder="How did the trade play out? Any execution mistakes? Paste the 'after' charts..."
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* Action Bar */}
+        <div className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t p-6 flex justify-end gap-4 z-50">
+          <Button 
+            type="button" 
+            variant="ghost" 
+            size="lg" 
+            className="text-slate-500 font-bold px-8"
+            onClick={() => onComplete?.()}
+          >
+            Discard
+          </Button>
+          <Button 
+            type="submit" 
+            size="lg" 
+            disabled={loading} 
+            className="min-w-[280px] bg-slate-950 hover:bg-black text-white font-black text-xl py-7 rounded-2xl shadow-2xl hover:shadow-blue-500/20 transition-all active:scale-95"
+          >
+            {loading ? 'Archiving...' : 'Archive Trade Entry'}
+          </Button>
+        </div>
+      </form>
+
+      {/* Friction Dialog */}
+      <Dialog open={isWarningOpen} onOpenChange={setIsWarningOpen}>
+        <DialogContent className="sm:max-w-[425px] border-l-8 border-l-red-500 p-8 rounded-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-3 text-red-600 text-2xl font-black">
+              <AlertTriangle className="h-8 w-8" />
+              STAND DOWN
+            </DialogTitle>
+            <DialogDescription className="pt-4 text-lg text-slate-800 leading-relaxed font-medium">
+              Psychological fatigue detected. Your data suggests an elevated risk of emotional interference.
+              <br /><br />
+              Reinforce discipline: Consider pausing for today.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex flex-col gap-3 mt-8">
+            <Button variant="outline" size="lg" className="w-full text-lg h-16 font-bold rounded-2xl" onClick={() => setIsWarningOpen(false)}>I will pause</Button>
+            <Button variant="destructive" size="lg" className="w-full text-lg h-16 font-black rounded-2xl opacity-40 hover:opacity-100 transition-opacity" onClick={() => executeSubmit()}>Override and Archive</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
