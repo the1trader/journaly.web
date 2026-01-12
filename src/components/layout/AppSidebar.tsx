@@ -3,7 +3,7 @@
 import * as React from 'react'
 import { LayoutDashboard, Newspaper, NotebookTabs, LogOut, Settings } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
-import { createClient } from '@/utils/supabase/client'
+import { authService } from '@/services/auth'
 
 import {
   Sidebar,
@@ -44,18 +44,23 @@ const navItems = [
 export function AppSidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const supabase = createClient()
 
   const handleLogout = async () => {
-    await supabase.auth.signOut()
+    await authService.signOut()
     router.push('/login')
     router.refresh()
   }
 
   return (
     <Sidebar variant="sidebar" collapsible="icon">
-      <SidebarHeader className="h-16 flex items-center px-6">
-        <h1 className="text-xl font-bold truncate">Trade Journal</h1>
+      <SidebarHeader className="h-20 flex items-center px-6">
+        <div className="flex items-center gap-3">
+          <div className="bg-slate-950 text-white w-10 h-10 rounded-xl flex items-center justify-center font-black text-xl shadow-lg shrink-0">J</div>
+          <div className="flex flex-col truncate">
+            <span className="text-lg font-black tracking-tight text-slate-900 uppercase italic leading-none">Journaly</span>
+            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-widest mt-1">From Clicks to Clarity</span>
+          </div>
+        </div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
